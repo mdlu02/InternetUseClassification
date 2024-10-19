@@ -367,12 +367,12 @@ def preprocess(data: SplitData) -> SplitData:
         )
         test_X = pd.merge(
             data.test_X,
-            timeseries_df[timeseries_df["id"].isin(test_X["id"])],
+            timeseries_df[timeseries_df["id"].isin(data.test_X["id"])],
             on="id"
         )
-        train_X.drop(columns=timeseries_to_exclude, inplace=True)
-        val_X.drop(columns=timeseries_to_exclude, inplace=True)
-        test_X.drop(columns=timeseries_to_exclude, inplace=True)
+        train_X.drop(columns=timeseries_to_exclude, inplace=True, errors="ignore")
+        val_X.drop(columns=timeseries_to_exclude, inplace=True, errors="ignore")
+        test_X.drop(columns=timeseries_to_exclude, inplace=True, errors="ignore")
 
         # Initialize pipeline
         filtered_cont_columns = [
@@ -383,7 +383,7 @@ def preprocess(data: SplitData) -> SplitData:
         ]
         min_max, std_scaler = [], []
         for col in filtered_cont_columns:
-            if col.startswith("anglez_"):
+            if "anglez_" in col:
                 min_max.append(col)
             elif col == "Basic_Demos-Age":
                 one_hot.append(col)
@@ -397,6 +397,7 @@ def preprocess(data: SplitData) -> SplitData:
         ])
 
         # Fit pipeline
+        print(train_X.columns, min_max, std_scaler, one_hot)
         train_X = pipeline.fit_transform(train_X)
         val_X = pipeline.transform(val_X)
         test_X = pipeline.transform(test_X)
