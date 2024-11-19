@@ -61,28 +61,7 @@ def get_data_types() -> Dict[str, List[str]]:
     }
 
 
-def cat_cols_to_exclude(
-    data: pd.DataFrame,
-    columns: List[str] = None,
-    hypothesis_threshold: float = 0.1
-):
-    to_exclude: List[str] = []
-    if columns is None:
-        columns = data.columns
-    for col in columns:
-        # Skip PCIAT columns since those are not available in the test dataset
-        if "PCIAT" in col or "sii" in col: continue
-        
-        # Perform ANOVA
-        aov = pg.welch_anova(dv="PCIAT-PCIAT_Total", between=col, data=data)
-        
-        if hypothesis_threshold < aov["p-unc"].values[0]:
-            to_exclude.append(col)
-        
-    return to_exclude
-
-
-def cont_cols_to_exclude(data: pd.DataFrame, corr_threshold: float = 0.8) -> Set:
+def cont_cols_to_exclude(data: pd.DataFrame, corr_threshold: float = 0.95) -> Set:
     correlation_matrix: pd.DataFrame = data.corr()
 
     column_pair_cnts: Dict[str, int] = {}
@@ -96,8 +75,6 @@ def cont_cols_to_exclude(data: pd.DataFrame, corr_threshold: float = 0.8) -> Set
                 correlated_pair_counts += 1
                 column_pair_cnts[col1] = column_pair_cnts.get(col1, 0) + 1
                 column_pair_cnts[col2] = column_pair_cnts.get(col2, 0) + 1
-
-    num_columns_with_correlated_pairs: int = len(column_pair_cnts)
 
     # print(f"Number of correlated pairs: {correlated_pair_counts}")
     # print(f"Number of columns with correlated pairs: {len(column_pair_cnts)}")
@@ -140,7 +117,7 @@ def cont_cols_to_exclude(data: pd.DataFrame, corr_threshold: float = 0.8) -> Set
         if corr_pair_count == 0: break
         prev = corr_pair_count
 
-    final_exclusions = to_exclude - to_return
+    # final_exclusions = to_exclude - to_return
     # print(
     #     f"Removing {len(final_exclusions)} columns out of "
     #     f"{num_columns_with_correlated_pairs} removes all correlated pairs"
@@ -160,6 +137,7 @@ class SplitData:
     train_y: pd.Series
     val_y: pd.Series
     test_y: pd.Series
+    full: pd.DataFrame
 
 
 @dataclass
@@ -254,6 +232,7 @@ def split(
         train_y=train_y,
         val_y=val_y,
         test_y=test_y,
+        full=X,
     )
 
 
@@ -344,33 +323,25 @@ def preprocess_folds(data: SplitData) -> SplitData:
     )
 
     timeseries_df = pd.merge(weekend_df, weekday_df, on="id")
-
+    del weekday_df, weekend_df
+    
     data_types: Dict[str, List[str]] = get_data_types()
+    to_exclude = cont_cols_to_exclude(data.full[data_types["cont_columns"]])
+    to_exclude.extend(
+        cont_cols_to_exclude(timeseries_df.drop(columns=["id"]))
+    )
+    to_exclude.append("id")
+
     for i in tqdm(range(len(data.train_X)), desc="Preprocessing folds"):
         train_X = data.train_X[i]
         val_X = data.val_X[i]
 
-        to_exclude: List[str] = []
-        # Get tabular continuous features to remove (based on correlation)
-        to_exclude.extend(
-            cont_cols_to_exclude(train_X[data_types["cont_columns"]])
-        )
-        # Get tabular categorical features to remove (based on ANOVA)
-        to_exclude.extend(
-            cat_cols_to_exclude(train_X[
-                [col for col in data_types["cat_columns"] if col in train_X.columns]
-                + ["PCIAT-PCIAT_Total"]
-            ])
-        )
-        train_X.drop(columns=to_exclude, inplace=True)
-        val_X.drop(columns=to_exclude, inplace=True)
-
         # Timeseries columns to exclude
-        timeseries_subset = timeseries_df[
-            timeseries_df["id"].isin(train_X["id"])
-        ]
-        timeseries_to_exclude = cont_cols_to_exclude(timeseries_subset.drop(columns=["id"]))
-        train_X = pd.merge(train_X, timeseries_subset, on="id")
+        train_X = pd.merge(
+            train_X,
+            timeseries_df[timeseries_df["id"].isin(train_X["id"])],
+            on="id"
+        )
         val_X = pd.merge(
             val_X,
             timeseries_df[timeseries_df["id"].isin(val_X["id"])],
@@ -381,9 +352,10 @@ def preprocess_folds(data: SplitData) -> SplitData:
             timeseries_df[timeseries_df["id"].isin(data.test_X["id"])],
             on="id"
         )
-        train_X.drop(columns=timeseries_to_exclude + ["id"], inplace=True, errors="ignore")
-        val_X.drop(columns=timeseries_to_exclude + ["id"], inplace=True, errors="ignore")
-        test_X.drop(columns=timeseries_to_exclude + ["id"], inplace=True, errors="ignore")
+
+        train_X.drop(columns=to_exclude, inplace=True, errors="ignore")
+        val_X.drop(columns=to_exclude, inplace=True, errors="ignore")
+        test_X.drop(columns=to_exclude, inplace=True, errors="ignore")
 
         # Initialize pipeline
         filtered_cont_columns = [
@@ -455,7 +427,7 @@ def preprocess_folds(data: SplitData) -> SplitData:
                 train_y=data.train_y,
                 val_y=data.val_y,
                 test_y=data.test_y,
-                to_exclude=to_exclude + timeseries_to_exclude,
+                to_exclude=to_exclude,
                 to_include=min_max + std_scaler + one_hot + ordinal,
                 pipeline=pipeline
             )
